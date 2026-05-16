@@ -180,4 +180,6 @@ otherwise-invisible costs of AI:
 - Epoch AI, the IEA, and the authors of de Vries (*Joule*, 2023) for
   inference-side energy modeling
 
-Built one evening with [Claude Code](https://www.anthropic.com/claude-code).
+Built one evening with [Claude Code](https://www.anthropic.com/claude-code) at
+a cost of ~261 Wh of energy, ~91 g CO₂e, and ~915 mL of water (≈ 11 smartphone
+charges and ~2 bottles' worth) — measured by this tool, on this tool.
