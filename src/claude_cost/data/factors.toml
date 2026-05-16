@@ -1,0 +1,274 @@
+# claude-cost default conversion factors.
+#
+# Every default is cited. Where ranges exist in the literature, we pick a
+# mid-range value and note the source. Override on the CLI with --region or
+# point at your own file with --factors path/to/factors.toml.
+#
+# Last reviewed: 2026-05-15.
+
+[meta]
+version = "0.1.0"
+description = "Token → kWh → kg CO2e + liters water, frontier-LLM inference."
+review_date = "2026-05-15"
+
+# ----------------------------------------------------------------------------
+# Energy: how much electricity each kind of token consumes.
+#
+# Anthropic does not publish per-model FLOPs or fleet-level kWh. The numbers
+# below are extrapolated from open measurements of similarly-sized dense
+# transformers and scaled by token class:
+#
+#   - output tokens: one full autoregressive forward pass each (dominates)
+#   - input/cache-creation tokens: one batched prefill (cheaper per token)
+#   - cache-read tokens: KV cache hit — only a few percent of prefill cost
+#
+# Reference anchors (all peer-reviewed or vendor-measured):
+#   - Epoch AI (2025): ~0.3 Wh per GPT-4o-class query @ ~500 output tokens
+#     => ~0.0005-0.0006 Wh per output token, GPU-active only.
+#   - Patel et al., Google (arXiv:2508.15734): 0.24 Wh per median Gemini text
+#     prompt, including PUE, idle, accelerator+CPU+DRAM. Production measurement.
+#   - Luccioni, Jernite, Strubell (FAccT 2024): direct measurement of text-gen
+#     models on A100s; BLOOMz-7B ~0.10 Wh/inference, larger models scale.
+#
+# All values below are Wh per 1000 tokens.
+# ----------------------------------------------------------------------------
+
+[energy]
+default_profile = "frontier"
+
+[energy.profiles.frontier]
+# Opus/Sonnet-class (~70-200B active params, dense or MoE active).
+# Output: Epoch's 0.3 Wh/query / ~500 tok ≈ 0.0006 Wh/tok → 0.6 Wh/1k.
+# We use 0.5 to align with the median between Epoch (GPU-active) and Google
+# (production all-in 0.24 Wh/prompt at ~250 output tok ≈ 0.001 Wh/tok before
+# overhead, ~0.0005 after overhead amortizes across longer responses).
+# Input: Epoch shows ~2.2 Wh added by 10k input tokens → ~0.00022 Wh/tok.
+# Cache read: ~10% of uncached input cost (mirrors Anthropic's billing ratio
+# as an energy proxy; KV-cache hits skip recomputation but still incur memory
+# bandwidth and routing).
+wh_per_1k_output_tokens         = 0.50
+wh_per_1k_input_tokens          = 0.25
+wh_per_1k_cache_creation_tokens = 0.30
+wh_per_1k_cache_read_tokens     = 0.025
+source = "epoch2025 + google2025 + luccioni2024"
+
+[energy.profiles.lightweight]
+# Haiku-class. Smaller active param count → roughly 3-4× less energy/token
+# at similar utilization. Conservative scaling from Luccioni 2024 (small
+# vs. large model deltas in their Table 4).
+wh_per_1k_output_tokens         = 0.15
+wh_per_1k_input_tokens          = 0.08
+wh_per_1k_cache_creation_tokens = 0.10
+wh_per_1k_cache_read_tokens     = 0.008
+source = "luccioni2024 (small-model scaling)"
+
+[energy.profiles.synthetic]
+# Synthetic/server-injected tool result messages — no inference cost.
+wh_per_1k_output_tokens         = 0.0
+wh_per_1k_input_tokens          = 0.0
+wh_per_1k_cache_creation_tokens = 0.0
+wh_per_1k_cache_read_tokens     = 0.0
+source = "n/a — synthetic message, no model run"
+
+# Map Claude model IDs to energy profiles. Unknown IDs fall through to
+# `default_profile` above (= frontier, the conservative-overstatement choice).
+[model_profiles]
+"claude-opus-4-7"       = "frontier"
+"claude-opus-4-6"       = "frontier"
+"claude-opus-4-5"       = "frontier"
+"claude-opus-4-1"       = "frontier"
+"claude-opus-4-0"       = "frontier"
+"claude-sonnet-4-6"     = "frontier"
+"claude-sonnet-4-5"     = "frontier"
+"claude-sonnet-4-0"     = "frontier"
+"claude-sonnet-3-7"     = "frontier"
+"claude-3-5-sonnet"     = "frontier"
+"claude-haiku-4-5"      = "lightweight"
+"claude-3-5-haiku"      = "lightweight"
+"claude-3-haiku"        = "lightweight"
+"<synthetic>"           = "synthetic"
+
+# ----------------------------------------------------------------------------
+# Grid carbon intensity. kg CO2e per kWh, location-based (eGRID).
+# We use location-based (physical grid mix), not market-based (RE-claimed),
+# because the question is "what did this kWh actually pull from the grid?"
+# AWS and Google's market-based zero-or-near-zero claims hide grid reality.
+# ----------------------------------------------------------------------------
+
+[grid.default]
+# Mid-range US value. Lands between eGRID NWPP (Oregon, where us-west-2 sits)
+# and the US-average from EIA. Errs slightly toward overstatement.
+kgco2e_per_kwh = 0.350
+source = "epa_egrid + eia_us_avg"
+
+[grid.regions."aws-us-west-2"]
+# eGRID2023 NWPP subregion (Pacific Northwest). 632 lb CO2e/MWh ≈ 0.287.
+kgco2e_per_kwh = 0.287
+source = "epa_egrid (NWPP subregion, eGRID2023)"
+
+[grid.regions."aws-us-east-1"]
+# eGRID2023 SRVC subregion (SERC Virginia/Carolina). 590 lb/MWh ≈ 0.268.
+kgco2e_per_kwh = 0.268
+source = "epa_egrid (SRVC subregion, eGRID2023)"
+
+[grid.regions."gcp-us-central1"]
+# eGRID2023 MROW subregion (Upper Midwest, including Iowa). ~960 lb/MWh.
+kgco2e_per_kwh = 0.435
+source = "epa_egrid (MROW subregion, eGRID2023)"
+
+[grid.regions."us-avg"]
+# US national average. EIA: 0.857 lb CO2e/kWh in 2022.
+kgco2e_per_kwh = 0.389
+source = "eia2022_us_avg"
+
+[grid.regions."world-avg"]
+# Ember Global Electricity Review 2024 — world average power-sector
+# carbon intensity, 2023 actual.
+kgco2e_per_kwh = 0.480
+source = "ember2024"
+
+# ----------------------------------------------------------------------------
+# Water consumption (operational, scope-1 + scope-2).
+# Liters of fresh water consumed per kWh of electricity used.
+#
+# Scope-1: datacenter cooling (evaporative). Provider WUE.
+# Scope-2: thermoelectric power generation upstream. EWIF (energy water
+#          intensity factor) from Li et al. and DoE.
+#
+# Defaults blend Li et al. (3.14 L/kWh off-site US avg) + Microsoft FY24 WUE
+# (0.30 L/kWh on-site) ≈ ~3.5 L/kWh.
+# ----------------------------------------------------------------------------
+
+[water.default]
+liters_per_kwh = 3.50
+source = "li2023 + microsoft2024_esr"
+
+[water.regions."aws-us-west-2"]
+# Oregon hydro-heavy mix → lower off-site water than US avg, but with active
+# cooling onsite. Estimate.
+liters_per_kwh = 2.40
+source = "li2023 (regional scaling, hydro-dominant grid)"
+
+[water.regions."aws-us-east-1"]
+# Virginia. Higher off-site water (more thermoelectric in the mix).
+liters_per_kwh = 3.80
+source = "li2023 (SE US grid composition)"
+
+[water.regions."us-avg"]
+liters_per_kwh = 3.50
+source = "li2023"
+
+[water.regions."world-avg"]
+liters_per_kwh = 3.20
+source = "li2023 (global scope-1+2 blend)"
+
+# ----------------------------------------------------------------------------
+# Human-relatable equivalents. All sourced from the EPA Greenhouse Gas
+# Equivalencies Calculator (2024 vintage) and EPA WaterSense.
+# ----------------------------------------------------------------------------
+
+[equivalents]
+# kg CO2e per US passenger-vehicle mile (light-duty avg, EPA 2024).
+kg_co2e_per_mile_driven       = 0.398
+# kg CO2e per smartphone charge (EPA: 8.22 g).
+kg_co2e_per_smartphone_charge = 0.00822
+# kg CO2e sequestered per year by an avg urban tree (EPA: 21.77 kg/yr).
+kg_co2e_per_tree_year         = 21.77
+# 8-minute shower at WaterSense-rated 2.0 gpm.
+# 2.0 gpm × 8 min × 3.785 L/gal = 60.56 L.
+liters_per_shower_8min        = 60.56
+# 500 mL water bottle — definitional.
+liters_per_water_bottle_500ml = 0.5
+# Beef-quarter-pounder water footprint (Mekonnen & Hoekstra 2012, ~6800 L for
+# a quarter-pound burger) — useful for sticker shock at large totals.
+liters_per_quarter_pound_beef = 6810.0
+
+# ----------------------------------------------------------------------------
+# Sources. Each gets a stable URL — no defaults are invented.
+# ----------------------------------------------------------------------------
+
+[sources.epoch2025]
+title = "How much energy does ChatGPT use?"
+authors = "You, Josh"
+year = 2025
+venue = "Epoch AI Gradient Updates"
+url = "https://epoch.ai/gradient-updates/how-much-energy-does-chatgpt-use"
+
+[sources.google2025]
+title = "Measuring the environmental impact of delivering AI at Google Scale"
+authors = "Patel et al."
+year = 2025
+venue = "arXiv:2508.15734"
+url = "https://arxiv.org/abs/2508.15734"
+
+[sources.luccioni2024]
+title = "Power Hungry Processing: Watts Driving the Cost of AI Deployment?"
+authors = "Luccioni, Jernite, Strubell"
+year = 2024
+venue = "ACM FAccT 2024"
+url = "https://arxiv.org/abs/2311.16863"
+doi = "10.1145/3630106.3658542"
+
+[sources.luccioni2022]
+title = "Estimating the Carbon Footprint of BLOOM, a 176B Parameter Language Model"
+authors = "Luccioni, Viguier, Ligozat"
+year = 2023
+venue = "JMLR"
+url = "https://arxiv.org/abs/2211.02001"
+
+[sources.devries2023]
+title = "The growing energy footprint of artificial intelligence"
+authors = "de Vries, Alex"
+year = 2023
+venue = "Joule 7(10)"
+url = "https://www.cell.com/joule/fulltext/S2542-4351(23)00365-3"
+doi = "10.1016/j.joule.2023.09.004"
+
+[sources.li2023]
+title = "Making AI Less 'Thirsty': Uncovering and Addressing the Secret Water Footprint of AI Models"
+authors = "Li, Yang, Islam, Ren"
+year = 2023
+venue = "arXiv (CACM 2025)"
+url = "https://arxiv.org/abs/2304.03271"
+
+[sources.iea2025]
+title = "Energy and AI"
+authors = "International Energy Agency"
+year = 2025
+url = "https://www.iea.org/reports/energy-and-ai"
+
+[sources.epa_egrid]
+title = "Emissions & Generation Resource Integrated Database (eGRID2023)"
+authors = "U.S. EPA"
+year = 2024
+url = "https://www.epa.gov/egrid"
+
+[sources.eia2022_us_avg]
+title = "How much carbon dioxide is produced per kilowatthour of U.S. electricity generation?"
+authors = "U.S. Energy Information Administration"
+year = 2023
+url = "https://www.eia.gov/tools/faqs/faq.php?id=74&t=11"
+
+[sources.ember2024]
+title = "Global Electricity Review 2024"
+authors = "Ember"
+year = 2024
+url = "https://ember-climate.org/insights/research/global-electricity-review-2024/"
+
+[sources.epa_equiv]
+title = "Greenhouse Gas Equivalencies Calculator"
+authors = "U.S. EPA"
+year = 2024
+url = "https://www.epa.gov/energy/greenhouse-gas-equivalencies-calculator"
+
+[sources.microsoft2024_esr]
+title = "2024 Environmental Sustainability Report"
+authors = "Microsoft Corporation"
+year = 2024
+url = "https://www.microsoft.com/corporate-responsibility/sustainability/report"
+
+[sources.google2024_er]
+title = "2024 Environmental Report"
+authors = "Google LLC"
+year = 2024
+url = "https://sustainability.google/reports/google-2024-environmental-report/"
